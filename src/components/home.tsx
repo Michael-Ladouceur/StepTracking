@@ -6,7 +6,7 @@ import { Settings, User, Award, BarChart2, LogOut } from "lucide-react";
 import Dashboard from "./Dashboard";
 import SettingsPanel from "./SettingsPanel";
 import Auth from "./Auth";
-import { Progress } from "@/components/ui/progress";
+import LocationTracker from "./LocationTracker";
 import authService, { AuthState } from "../services/authService";
 
 const Home = () => {
@@ -76,7 +76,7 @@ const Home = () => {
           <div className="bg-primary p-2 rounded-full">
             <BarChart2 className="h-6 w-6 text-primary-foreground" />
           </div>
-          <h1 className="text-2xl font-bold">StepTracker</h1>
+          <h1 className="text-2xl font-bold">FitLock</h1>
         </div>
         <div className="flex gap-2">
           <Button
@@ -155,50 +155,30 @@ const Home = () => {
             </Card>
           </TabsContent>
           <TabsContent value="dashboard" className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <Card className="col-span-1 md:col-span-2">
-                <CardHeader>
-                  <CardTitle>Today's Progress</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <Dashboard />
-                </CardContent>
-              </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle>Today's Progress</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Dashboard />
+              </CardContent>
+            </Card>
 
-              <Card>
-                <CardHeader>
-                  <CardTitle>Daily Summary</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-6">
-                  <div className="text-center">
-                    <span className="text-4xl font-bold">
-                      {mockData.dailySteps.toLocaleString()}
-                    </span>
-                    <p className="text-muted-foreground">steps today</p>
-                  </div>
-
-                  <div className="space-y-2">
-                    <div className="flex justify-between">
-                      <span className="text-sm">
-                        Goal: {mockData.goalSteps.toLocaleString()} steps
-                      </span>
-                      <span className="text-sm font-medium">
-                        {Math.round(progressPercentage)}%
-                      </span>
-                    </div>
-                    <Progress value={progressPercentage} className="h-2" />
-                  </div>
-
-                  <div className="pt-4 border-t">
-                    <p className="text-sm text-muted-foreground mb-2">
-                      Weekly Average
-                    </p>
-                    <p className="text-xl font-semibold">
-                      {mockData.weeklyAverage.toLocaleString()} steps
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
+            {/* Hidden LocationTracker - runs in background for gym tracking */}
+            <div style={{ display: "none" }}>
+              <LocationTracker
+                trackingEnabled={true}
+                gymLocation={{
+                  latitude: 37.7749,
+                  longitude: -122.4194,
+                  name: "My Gym",
+                  radiusMeters: 50,
+                }}
+                onGymStatusChange={(isAtGym, timeSpent) => {
+                  // Handle gym status changes silently
+                  console.log("Gym status:", isAtGym, "Time spent:", timeSpent);
+                }}
+              />
             </div>
           </TabsContent>
 

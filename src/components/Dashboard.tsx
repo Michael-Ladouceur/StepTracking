@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Card,
   CardContent,
@@ -9,22 +9,27 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import { Calendar } from "@/components/ui/calendar";
 import {
   CircleCheck,
   Award,
   TrendingUp,
-  Clock,
   Shield,
   ShieldCheck,
+  CalendarDays,
 } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 import StepChart from "./StepChart";
 import SettingsPanel from "./SettingsPanel";
+import LocationTracker from "./LocationTracker";
 import healthAppService from "../services/healthAppService";
 import blockingService, { BlockingStatus } from "../services/blockingService";
 
 interface DashboardProps {
   currentSteps?: number;
+  currentGymTime?: number;
   dailyGoal?: number;
+  dailyGymGoal?: number;
   achievements?: Array<{
     id: string;
     title: string;
@@ -36,11 +41,17 @@ interface DashboardProps {
     date: string;
     steps: number;
   }>;
+  weeklyGymData?: Array<{
+    date: string;
+    gymTime: number;
+  }>;
 }
 
 const Dashboard = ({
   currentSteps = 7842,
+  currentGymTime = 45,
   dailyGoal = 10000,
+  dailyGymGoal = 60,
   achievements = [
     {
       id: "1",
@@ -78,6 +89,15 @@ const Dashboard = ({
     { date: "Sat", steps: 5327 },
     { date: "Sun", steps: 0 },
   ],
+  weeklyGymData = [
+    { date: "Mon", gymTime: 65 },
+    { date: "Tue", gymTime: 45 },
+    { date: "Wed", gymTime: 90 },
+    { date: "Thu", gymTime: 30 },
+    { date: "Fri", gymTime: 75 },
+    { date: "Sat", gymTime: 120 },
+    { date: "Sun", gymTime: 0 },
+  ],
 }: DashboardProps) => {
   const [showSettings, setShowSettings] = useState(false);
   const [syncStatus, setSyncStatus] = useState<
@@ -86,15 +106,82 @@ const Dashboard = ({
   const [blockingStatus, setBlockingStatus] = useState<BlockingStatus | null>(
     null,
   );
-  const progressPercentage = Math.min(
+
+  const [goalAchievedDates, setGoalAchievedDates] = useState<Date[]>([]);
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(
+    new Date(),
+  );
+  const [historicalStepData, setHistoricalStepData] = useState<
+    Record<string, number>
+  >({});
+  const [historicalGymData, setHistoricalGymData] = useState<
+    Record<string, number>
+  >({});
+  const [previousProgress, setPreviousProgress] = useState({
+    stepProgress: 0,
+    gymProgress: 0,
+    overallProgress: 0,
+  });
+
+  // Get current tracking mode from blocking service
+  const trackingMode = blockingStatus?.trackingMode || "steps";
+  const isLocationMode = trackingMode === "location";
+  const isBothMode = trackingMode === "both";
+
+  // Calculate progress based on tracking mode with real-time updates
+  const stepProgressPercentage = Math.min(
     Math.round((currentSteps / dailyGoal) * 100),
     100,
   );
+  const gymProgressPercentage = Math.min(
+    Math.round((currentGymTime / dailyGymGoal) * 100),
+    100,
+  );
+
+  const progressPercentage = isBothMode
+    ? Math.min(stepProgressPercentage, gymProgressPercentage) // Show the lower of the two for combined mode
+    : isLocationMode
+      ? gymProgressPercentage
+      : stepProgressPercentage;
+
+  // Real-time progress update handler
+  const updateProgressWithAnimation = useCallback(() => {
+    const newProgress = {
+      stepProgress: stepProgressPercentage,
+      gymProgress: gymProgressPercentage,
+      overallProgress: progressPercentage,
+    };
+
+    // Only update if there's a significant change (>1%) to avoid excessive re-renders
+    if (
+      Math.abs(newProgress.stepProgress - previousProgress.stepProgress) > 1 ||
+      Math.abs(newProgress.gymProgress - previousProgress.gymProgress) > 1 ||
+      Math.abs(newProgress.overallProgress - previousProgress.overallProgress) >
+        1
+    ) {
+      setPreviousProgress(newProgress);
+    }
+  }, [
+    stepProgressPercentage,
+    gymProgressPercentage,
+    progressPercentage,
+    previousProgress,
+  ]);
+
+  // Update progress in real-time
+  useEffect(() => {
+    updateProgressWithAnimation();
+  }, [updateProgressWithAnimation]);
 
   useEffect(() => {
-    // Update blocking service with current step count
-    blockingService.updateStepCount(currentSteps);
-    localStorage.setItem("stepTracker_currentSteps", currentSteps.toString());
+    // Update blocking service with current data based on tracking mode
+    if (trackingMode === "steps") {
+      blockingService.updateStepCount(currentSteps);
+      localStorage.setItem("stepTracker_currentSteps", currentSteps.toString());
+    } else {
+      blockingService.updateGymTime(currentGymTime);
+      localStorage.setItem("stepTracker_gymTime", currentGymTime.toString());
+    }
 
     // Listen for blocking status updates
     const handleStatusUpdate = (status: BlockingStatus) => {
@@ -102,12 +189,77 @@ const Dashboard = ({
     };
 
     blockingService.addListener(handleStatusUpdate);
-    setBlockingStatus(blockingService.getBlockingStatus());
+    const initialStatus = blockingService.getBlockingStatus();
+    setBlockingStatus(initialStatus);
+
+    // Generate goal achieved dates and historical data
+    const generateHistoricalData = () => {
+      const dates: Date[] = [];
+      const stepData: Record<string, number> = {};
+      const gymData: Record<string, number> = {};
+      const today = new Date();
+
+      // Generate realistic data for the past 30 days
+      for (let i = 0; i < 30; i++) {
+        const date = new Date(today);
+        date.setDate(today.getDate() - i);
+        const dateKey = date.toISOString().split("T")[0];
+
+        // Generate realistic step counts (3000-15000 range)
+        const baseSteps = 6000 + Math.floor(Math.random() * 6000);
+        const weekendMultiplier =
+          date.getDay() === 0 || date.getDay() === 6 ? 0.7 : 1;
+        const steps = Math.floor(baseSteps * weekendMultiplier);
+        stepData[dateKey] = steps;
+
+        // Generate realistic gym time (0-120 minutes)
+        const baseGymTime = Math.floor(Math.random() * 90) + 30; // 30-120 minutes
+        const gymTime =
+          date.getDay() === 0 ? 0 : Math.floor(baseGymTime * weekendMultiplier);
+        gymData[dateKey] = gymTime;
+
+        // Add to goal achieved dates based on tracking mode
+        const goalMet =
+          trackingMode === "steps"
+            ? steps >= dailyGoal
+            : gymTime >= dailyGymGoal;
+
+        if (goalMet) {
+          dates.push(date);
+        }
+      }
+
+      // Set today's data to current values
+      const todayKey = today.toISOString().split("T")[0];
+      stepData[todayKey] = currentSteps;
+      gymData[todayKey] = currentGymTime;
+
+      // Add today to goal achieved dates if goal is met
+      const todayGoalMet =
+        trackingMode === "steps"
+          ? currentSteps >= dailyGoal
+          : currentGymTime >= dailyGymGoal;
+
+      if (todayGoalMet) {
+        const todayExists = dates.some(
+          (date) => date.toDateString() === today.toDateString(),
+        );
+        if (!todayExists) {
+          dates.push(today);
+        }
+      }
+
+      setGoalAchievedDates(dates);
+      setHistoricalStepData(stepData);
+      setHistoricalGymData(gymData);
+    };
+
+    generateHistoricalData();
 
     return () => {
       blockingService.removeListener(handleStatusUpdate);
     };
-  }, [currentSteps]);
+  }, [currentSteps, currentGymTime, dailyGoal, dailyGymGoal, trackingMode]);
 
   const handleSyncHealthApps = async () => {
     setSyncStatus("syncing");
@@ -127,7 +279,7 @@ const Dashboard = ({
         {/* Header Section */}
         <div className="flex justify-between items-center">
           <div>
-            <h1 className="text-3xl font-bold">Step Tracker</h1>
+            <h1 className="text-3xl font-bold">FitLock</h1>
             <p className="text-muted-foreground">
               Track your daily movement and boost productivity
             </p>
@@ -174,8 +326,30 @@ const Dashboard = ({
                     Website Blocking Active
                   </h3>
                   <p className="text-sm text-orange-700">
-                    Complete {blockingStatus.remainingSteps.toLocaleString()}{" "}
-                    more steps to unlock blocked websites.
+                    {blockingStatus.trackingMode === "steps" ? (
+                      <>
+                        Complete{" "}
+                        {blockingStatus.remainingSteps.toLocaleString()} more
+                        steps to unlock blocked websites.
+                      </>
+                    ) : blockingStatus.trackingMode === "location" ? (
+                      <>
+                        Spend {blockingStatus.remainingGymTime} more minutes at
+                        the gym to unlock blocked websites.
+                      </>
+                    ) : (
+                      <>
+                        Complete BOTH goals to unlock:
+                        <br />• Steps:{" "}
+                        {blockingStatus.stepGoalAchieved
+                          ? "✓ Complete"
+                          : `${blockingStatus.remainingSteps.toLocaleString()} remaining`}
+                        <br />• Gym:{" "}
+                        {blockingStatus.gymGoalAchieved
+                          ? "✓ Complete"
+                          : `${blockingStatus.remainingGymTime} min remaining`}
+                      </>
+                    )}
                   </p>
                 </div>
               </div>
@@ -184,8 +358,42 @@ const Dashboard = ({
         )}
 
         {blockingStatus &&
+          blockingStatus.trackingMode === "both" &&
+          !blockingStatus.isBlocked && (
+            <Card className="border-blue-200 bg-blue-50">
+              <CardContent className="pt-6">
+                <div className="flex items-center gap-3">
+                  <ShieldCheck className="h-5 w-5 text-blue-600" />
+                  <div>
+                    <h3 className="font-medium text-blue-800">
+                      Dual Tracking Status
+                    </h3>
+                    <p className="text-sm text-blue-700">
+                      Steps:{" "}
+                      {blockingStatus.stepGoalAchieved
+                        ? "✓ Complete"
+                        : `${stepProgressPercentage}% (${blockingStatus.remainingSteps.toLocaleString()} remaining)`}
+                      <br />
+                      Gym:{" "}
+                      {blockingStatus.gymGoalAchieved
+                        ? "✓ Complete"
+                        : `${gymProgressPercentage}% (${blockingStatus.remainingGymTime} min remaining)`}
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+        {blockingStatus &&
           !blockingStatus.isBlocked &&
-          blockingStatus.currentSteps >= blockingStatus.goalSteps && (
+          ((blockingStatus.trackingMode === "steps" &&
+            blockingStatus.currentSteps >= blockingStatus.goalSteps) ||
+            (blockingStatus.trackingMode === "location" &&
+              blockingStatus.currentGymTime >= blockingStatus.goalGymTime) ||
+            (blockingStatus.trackingMode === "both" &&
+              blockingStatus.stepGoalAchieved &&
+              blockingStatus.gymGoalAchieved)) && (
             <Card className="border-green-200 bg-green-50">
               <CardContent className="pt-6">
                 <div className="flex items-center gap-3">
@@ -195,7 +403,11 @@ const Dashboard = ({
                       Goal Achieved! All Sites Unlocked
                     </h3>
                     <p className="text-sm text-green-700">
-                      Congratulations! You've reached your daily step goal.
+                      {blockingStatus.trackingMode === "steps"
+                        ? "Congratulations! You've reached your daily step goal."
+                        : blockingStatus.trackingMode === "location"
+                          ? "Congratulations! You've completed your gym time goal."
+                          : "Congratulations! You've completed both your step and gym goals!"}
                     </p>
                   </div>
                 </div>
@@ -208,8 +420,52 @@ const Dashboard = ({
           {/* Today's Progress */}
           <Card className="md:col-span-2">
             <CardHeader>
-              <CardTitle>Today's Progress</CardTitle>
-              <CardDescription>Friday, May 19, 2023</CardDescription>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>
+                    Today's Progress -{" "}
+                    {isBothMode
+                      ? "Dual Tracking"
+                      : isLocationMode
+                        ? "Gym Time"
+                        : "Steps"}
+                  </CardTitle>
+                  <CardDescription>Friday, May 19, 2023</CardDescription>
+                </div>
+                {/* Tracking Method Toggle */}
+                {!isBothMode && (
+                  <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
+                    <button
+                      onClick={() => {
+                        blockingService.updateSettings({
+                          trackingMode: "steps",
+                        });
+                      }}
+                      className={`px-3 py-1 rounded-md text-sm font-medium transition-all ${
+                        trackingMode === "steps"
+                          ? "bg-primary text-primary-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      Steps
+                    </button>
+                    <button
+                      onClick={() => {
+                        blockingService.updateSettings({
+                          trackingMode: "location",
+                        });
+                      }}
+                      className={`px-3 py-1 rounded-md text-sm font-medium transition-all ${
+                        trackingMode === "location"
+                          ? "bg-primary text-primary-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      Gym
+                    </button>
+                  </div>
+                )}
+              </div>
             </CardHeader>
             <CardContent>
               <div className="flex flex-col items-center gap-4">
@@ -226,7 +482,7 @@ const Dashboard = ({
                       r="40"
                       fill="transparent"
                     />
-                    <circle
+                    <motion.circle
                       className="text-primary stroke-current"
                       strokeWidth="10"
                       strokeLinecap="round"
@@ -235,30 +491,96 @@ const Dashboard = ({
                       r="40"
                       fill="transparent"
                       strokeDasharray="251.2"
-                      strokeDashoffset={
-                        251.2 - (251.2 * progressPercentage) / 100
-                      }
+                      initial={{ strokeDashoffset: 251.2 }}
+                      animate={{
+                        strokeDashoffset:
+                          251.2 - (251.2 * progressPercentage) / 100,
+                      }}
+                      transition={{
+                        duration: 0.4,
+                        ease: "easeInOut",
+                      }}
                       transform="rotate(-90 50 50)"
                     />
                   </svg>
                   <div className="absolute flex flex-col items-center justify-center">
-                    <span className="text-4xl font-bold">
-                      {currentSteps.toLocaleString()}
-                    </span>
-                    <span className="text-sm text-muted-foreground">
-                      of {dailyGoal.toLocaleString()} steps
-                    </span>
+                    {isBothMode ? (
+                      <>
+                        <div className="text-center">
+                          <div className="text-2xl font-bold">
+                            {currentSteps.toLocaleString()}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            of {dailyGoal.toLocaleString()} steps
+                          </div>
+                        </div>
+                        <div className="text-center mt-1">
+                          <div className="text-2xl font-bold">
+                            {currentGymTime}min
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            of {dailyGymGoal} minutes
+                          </div>
+                        </div>
+                      </>
+                    ) : isLocationMode ? (
+                      <>
+                        <span className="text-4xl font-bold">
+                          {currentGymTime}
+                        </span>
+                        <span className="text-sm text-muted-foreground">
+                          of {dailyGymGoal} minutes
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-4xl font-bold">
+                          {currentSteps.toLocaleString()}
+                        </span>
+                        <span className="text-sm text-muted-foreground">
+                          of {dailyGoal.toLocaleString()} steps
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
-                <Progress value={progressPercentage} className="w-full h-2" />
+                <motion.div
+                  className="w-full"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ duration: 0.3 }}
+                >
+                  <Progress
+                    value={progressPercentage}
+                    className="w-full h-2 transition-all duration-300 ease-in-out"
+                  />
+                </motion.div>
                 <div className="flex items-center gap-2">
-                  <span className="text-lg font-medium">
-                    {progressPercentage}% Complete
-                  </span>
-                  {progressPercentage >= 100 && (
-                    <Badge className="bg-green-500">
-                      <CircleCheck className="w-4 h-4 mr-1" /> Goal Reached
-                    </Badge>
+                  {isBothMode ? (
+                    <div className="text-center">
+                      <span className="text-lg font-medium">
+                        Steps: {stepProgressPercentage}% | Gym:{" "}
+                        {gymProgressPercentage}%
+                      </span>
+                      {blockingStatus?.stepGoalAchieved &&
+                        blockingStatus?.gymGoalAchieved && (
+                          <Badge className="bg-green-500 ml-2">
+                            <CircleCheck className="w-4 h-4 mr-1" /> Both Goals
+                            Reached
+                          </Badge>
+                        )}
+                    </div>
+                  ) : (
+                    <>
+                      <span className="text-lg font-medium">
+                        {progressPercentage}% Complete
+                      </span>
+                      {progressPercentage >= 100 && (
+                        <Badge className="bg-green-500">
+                          <CircleCheck className="w-4 h-4 mr-1" /> Goal Reached
+                        </Badge>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
@@ -305,67 +627,214 @@ const Dashboard = ({
           </Card>
         </div>
 
-        {/* Step History Chart */}
+        {/* History Chart */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <TrendingUp className="w-5 h-5" /> Step History
+              <TrendingUp className="w-5 h-5" />
+              {isLocationMode ? "Gym History" : "Step History"}
             </CardTitle>
-            <CardDescription>View your progress over time</CardDescription>
+            <CardDescription>
+              View your {isLocationMode ? "gym time" : "step"} progress over
+              time
+            </CardDescription>
           </CardHeader>
           <CardContent>
-            <Tabs defaultValue="weekly">
-              <TabsList className="mb-4">
-                <TabsTrigger value="daily">Daily</TabsTrigger>
-                <TabsTrigger value="weekly">Weekly</TabsTrigger>
-                <TabsTrigger value="monthly">Monthly</TabsTrigger>
-              </TabsList>
-              <TabsContent value="daily" className="h-[300px]">
-                <StepChart data={[{ date: "Today", steps: currentSteps }]} />
-              </TabsContent>
-              <TabsContent value="weekly" className="h-[300px]">
-                <StepChart data={weeklyData} />
-              </TabsContent>
-              <TabsContent value="monthly" className="h-[300px]">
-                <StepChart
-                  data={[
-                    { date: "Week 1", steps: 52000 },
-                    { date: "Week 2", steps: 48500 },
-                    { date: "Week 3", steps: 61200 },
-                    { date: "Week 4", steps: 43800 },
-                  ]}
-                />
-              </TabsContent>
-            </Tabs>
+            <StepChart
+              stepData={{
+                daily: weeklyData.map((item) => ({
+                  date: item.date,
+                  steps: item.steps,
+                })),
+                weekly: [
+                  { date: "Week 1", steps: 52000 },
+                  { date: "Week 2", steps: 48500 },
+                  { date: "Week 3", steps: 61200 },
+                  { date: "Week 4", steps: 43800 },
+                ],
+                monthly: [
+                  { date: "January", steps: 231456 },
+                  { date: "February", steps: 198732 },
+                  { date: "March", steps: 245678 },
+                  { date: "April", steps: 213567 },
+                  { date: "May", steps: 267890 },
+                  { date: "June", steps: 243219 },
+                  { date: "July", steps: 254321 },
+                  { date: "August", steps: 268754 },
+                  { date: "September", steps: 241987 },
+                  { date: "October", steps: 229876 },
+                  { date: "November", steps: 235432 },
+                  { date: "December", steps: 248765 },
+                ],
+              }}
+              gymData={{
+                daily: weeklyGymData.map((item) => ({
+                  date: item.date,
+                  steps: item.gymTime,
+                })),
+                weekly: [
+                  { date: "Week 1", steps: 420 },
+                  { date: "Week 2", steps: 380 },
+                  { date: "Week 3", steps: 510 },
+                  { date: "Week 4", steps: 290 },
+                ],
+                monthly: [
+                  { date: "January", steps: 1680 },
+                  { date: "February", steps: 1520 },
+                  { date: "March", steps: 1890 },
+                  { date: "April", steps: 1650 },
+                  { date: "May", steps: 1980 },
+                  { date: "June", steps: 1740 },
+                  { date: "July", steps: 1820 },
+                  { date: "August", steps: 1950 },
+                  { date: "September", steps: 1680 },
+                  { date: "October", steps: 1590 },
+                  { date: "November", steps: 1720 },
+                  { date: "December", steps: 1860 },
+                ],
+              }}
+              goal={dailyGoal}
+              gymGoal={dailyGymGoal}
+              trackingMode={trackingMode}
+            />
           </CardContent>
         </Card>
 
-        {/* Movement Break Reminders */}
+        {/* Goal Achievement Calendar */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Clock className="w-5 h-5" /> Movement Breaks
+              <CalendarDays className="w-5 h-5" /> Goal Calendar
             </CardTitle>
-            <CardDescription>Scheduled reminders to get moving</CardDescription>
+            <CardDescription>
+              Days when you achieved your step goal
+            </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {["Morning Break", "Lunch Walk", "Afternoon Stretch"].map(
-                (reminder, index) => (
-                  <div key={index} className="p-4 border rounded-lg">
-                    <h4 className="font-medium">{reminder}</h4>
-                    <p className="text-sm text-muted-foreground">
-                      {["10:30 AM", "12:45 PM", "3:15 PM"][index]}
-                    </p>
-                    <Badge variant="outline" className="mt-2">
-                      Active
-                    </Badge>
+            <div className="flex flex-col lg:flex-row gap-6">
+              <div className="flex-shrink-0">
+                <Calendar
+                  mode="single"
+                  selected={selectedDate}
+                  onSelect={setSelectedDate}
+                  className="rounded-md border"
+                  modifiers={{
+                    goalAchieved: goalAchievedDates,
+                  }}
+                  modifiersStyles={{
+                    goalAchieved: {
+                      backgroundColor: "#10b981",
+                      color: "white",
+                      fontWeight: "bold",
+                    },
+                  }}
+                  disabled={(date) => date > new Date()}
+                />
+              </div>
+              <div className="flex-1 space-y-4">
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 text-sm">
+                    <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                    <span>Goal achieved ({goalAchievedDates.length} days)</span>
                   </div>
-                ),
-              )}
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <div className="w-3 h-3 bg-muted rounded-full"></div>
+                    <span>Goal not achieved</span>
+                  </div>
+                </div>
+                {selectedDate && (
+                  <div className="pt-4 border-t">
+                    <p className="text-sm font-medium mb-2">
+                      {selectedDate.toLocaleDateString("en-US", {
+                        weekday: "long",
+                        year: "numeric",
+                        month: "long",
+                        day: "numeric",
+                      })}
+                    </p>
+                    {(() => {
+                      const dateKey = selectedDate.toISOString().split("T")[0];
+                      const stepsForDate = historicalStepData[dateKey];
+                      const gymTimeForDate = historicalGymData[dateKey];
+                      const goalAchieved = goalAchievedDates.some(
+                        (date) =>
+                          date.toDateString() === selectedDate.toDateString(),
+                      );
+
+                      const currentValue = isLocationMode
+                        ? gymTimeForDate
+                        : stepsForDate;
+                      const currentGoal = isLocationMode
+                        ? dailyGymGoal
+                        : dailyGoal;
+                      const unit = isLocationMode ? "minutes" : "steps";
+
+                      return (
+                        <div className="space-y-1">
+                          {currentValue !== undefined && (
+                            <p className="text-sm font-medium">
+                              {isLocationMode ? "Gym Time" : "Steps"}:{" "}
+                              {isLocationMode
+                                ? currentValue
+                                : currentValue.toLocaleString()}{" "}
+                              {unit}
+                            </p>
+                          )}
+                          <p className="text-sm text-muted-foreground">
+                            {goalAchieved ? (
+                              <span className="text-green-600 font-medium">
+                                ✓ Goal achieved! (
+                                {Math.round(
+                                  ((currentValue || 0) / currentGoal) * 100,
+                                )}
+                                %)
+                              </span>
+                            ) : currentValue !== undefined ? (
+                              <span className="text-orange-600">
+                                Goal not achieved (
+                                {Math.round(
+                                  ((currentValue || 0) / currentGoal) * 100,
+                                )}
+                                %)
+                              </span>
+                            ) : (
+                              "No data available"
+                            )}
+                          </p>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
             </div>
           </CardContent>
         </Card>
+
+        {/* Location Tracker - Hidden from user but still functional */}
+        {blockingStatus && blockingStatus.trackingMode === "location" && (
+          <div style={{ display: "none" }}>
+            <LocationTracker
+              trackingEnabled={true}
+              gymLocation={{
+                latitude: blockingService.getSettings().locationGoal.latitude,
+                longitude: blockingService.getSettings().locationGoal.longitude,
+                name: blockingService.getSettings().locationGoal.gymName,
+                radiusMeters:
+                  blockingService.getSettings().locationGoal.radiusMeters,
+              }}
+              onGymStatusChange={(isAtGym, timeSpent) => {
+                if (!isAtGym) {
+                  blockingService.updateGymTime(timeSpent);
+                  localStorage.setItem(
+                    "stepTracker_gymTime",
+                    timeSpent.toString(),
+                  );
+                }
+              }}
+            />
+          </div>
+        )}
 
         {/* Settings Panel */}
         {showSettings && (
@@ -373,7 +842,7 @@ const Dashboard = ({
             <CardHeader>
               <CardTitle>Settings</CardTitle>
               <CardDescription>
-                Configure your step goals and reminders
+                Configure your goals and reminders
               </CardDescription>
             </CardHeader>
             <CardContent>

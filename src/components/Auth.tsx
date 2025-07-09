@@ -193,7 +193,7 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
   return (
     <Card className="w-full max-w-md mx-auto bg-white">
       <CardHeader className="text-center">
-        <CardTitle className="text-2xl font-bold">StepTracker</CardTitle>
+        <CardTitle className="text-2xl font-bold">FitLock</CardTitle>
         <CardDescription>
           Create an account or sign in to track your steps
         </CardDescription>
